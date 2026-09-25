@@ -483,6 +483,46 @@ void powerOff() {}
 void checkReboot() {}
 
 /*********************************************************************
+** Function: isCharging
+** location: interface.cpp (overrides weak default in display.cpp)
+** Description: This board has no dedicated VBUS/charge-status pin wired
+** to the MCU, so charging is inferred indirectly from a sustained rise
+** in battery voltage over time. Not 100% accurate, but good enough for
+** a visual indicator.
+**********************************************************************/
+bool isCharging() {
+    // Keep this in sync with the default ANALOG_BAT_MULTIPLIER in core/utils.cpp
+    const float BAT_MULTIPLIER = 2.0f;
+    const uint32_t CHECK_INTERVAL_MS = 5000; // sample every 5s
+    const float RISE_THRESHOLD_MV = 5.0f;    // min rise to call it "charging"
+
+    static uint32_t lastCheckMs = 0;
+    static float lastVoltage = 0.0f;
+    static bool charging = false;
+    static bool initialized = false;
+
+    uint32_t now = millis();
+    if (!initialized || now - lastCheckMs >= CHECK_INTERVAL_MS) {
+        uint32_t adcReading = analogReadMilliVolts(ANALOG_BAT_PIN);
+        float voltage = (float)adcReading * BAT_MULTIPLIER;
+
+        if (initialized) {
+            float delta = voltage - lastVoltage;
+            if (delta > RISE_THRESHOLD_MV) charging = true;
+            else if (delta < -RISE_THRESHOLD_MV) charging = false;
+            // small deltas: keep previous state to avoid flicker
+        }
+
+        lastVoltage = voltage;
+        lastCheckMs = now;
+        initialized = true;
+    }
+
+    return charging;
+}
+
+
+/*********************************************************************
 ** Function: _setup_codec_speaker
 ** location: modules/others/audio.cpp
 ** Handles audio CODEC to enable/disable speaker

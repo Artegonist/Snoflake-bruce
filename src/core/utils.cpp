@@ -54,11 +54,39 @@ int getBattery() {
     }
     uint32_t adcReading = analogReadMilliVolts(ANALOG_BAT_PIN);
     float actualVoltage = (float)adcReading * ANALOG_BAT_MULTIPLIER;
-    const float MIN_VOLTAGE = 3300.0f;
-    const float MAX_VOLTAGE = 4150.0f;
-    float percent = ((actualVoltage - MIN_VOLTAGE) / (MAX_VOLTAGE - (MIN_VOLTAGE + 50.0f))) * 100.0f;
 
-    if (percent < 0) percent = 1;
+    // Нелинейная таблица напряжение(мВ) -> заряд(%), приближает реальную
+    // разрядную кривую LiPo вместо простой линейной формулы
+    static const float vTable[][2] = {
+        {4150.0f, 100.0f}, {4100.0f, 95.0f}, {4060.0f, 90.0f}, {4020.0f, 85.0f},
+        {3980.0f, 80.0f},  {3940.0f, 75.0f}, {3900.0f, 70.0f}, {3870.0f, 65.0f},
+        {3840.0f, 60.0f},  {3810.0f, 55.0f}, {3790.0f, 50.0f}, {3770.0f, 45.0f},
+        {3750.0f, 40.0f},  {3730.0f, 35.0f}, {3700.0f, 30.0f}, {3670.0f, 25.0f},
+        {3630.0f, 20.0f},  {3580.0f, 15.0f}, {3500.0f, 10.0f}, {3400.0f, 5.0f},
+        {3300.0f, 0.0f}
+    };
+    const int tableSize = sizeof(vTable) / sizeof(vTable[0]);
+
+    float percent;
+    if (actualVoltage >= vTable[0][0]) {
+        percent = 100.0f;
+    } else if (actualVoltage <= vTable[tableSize - 1][0]) {
+        percent = 0.0f;
+    } else {
+        percent = 0.0f;
+        for (int i = 0; i < tableSize - 1; i++) {
+            float vHigh = vTable[i][0];
+            float vLow  = vTable[i + 1][0];
+            if (actualVoltage <= vHigh && actualVoltage >= vLow) {
+                float pHigh = vTable[i][1];
+                float pLow  = vTable[i + 1][1];
+                percent = pLow + (actualVoltage - vLow) * (pHigh - pLow) / (vHigh - vLow);
+                break;
+            }
+        }
+    }
+
+    if (percent < 1) percent = 1;
     if (percent > 100) percent = 100;
     return (int)percent;
 #endif
