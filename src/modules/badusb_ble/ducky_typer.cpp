@@ -1054,6 +1054,7 @@ void ducky_keyboard(HIDInterface *&hid, bool ble) {
             if (snoflakeBleWasConnected && hid) hid->releaseAll();
             snoflakeBleWasConnected = false;
             key = _getKeyPress();
+            if (key.pressed && key.fn && key.exit_key) break;
             vTaskDelay(pdMS_TO_TICKS(10));
             continue;
         }
@@ -1081,10 +1082,11 @@ void ducky_keyboard(HIDInterface *&hid, bool ble) {
             key.enter || key.del || key.alt || key.ctrl ||
             !key.word.empty() || !key.modifier_keys.empty();
 
+        const bool isExitKey = key.fn && key.exit_key;
         const bool acceptKey =
             key.pressed &&
             (snoflakeHidModeStarted
-                ? hasKeyPayload
+                ? (isExitKey || (hasKeyPayload && millis() - debounce > 50))
                 : (millis() - debounce > 200));
 
         if (acceptKey) {
@@ -1106,21 +1108,8 @@ void ducky_keyboard(HIDInterface *&hid, bool ble) {
                 else if (key.del) hid->press(KEYBACKSPACE);
                 else for (char k : key.word) hid->press(k);
 
-                for (char k : key.word) hid->release(k);
-
-                if (key.enter) hid->release(KEY_RETURN);
-                if (key.del) hid->release(KEYBACKSPACE);
-
-                for (auto k : key.modifier_keys) {
-                    if (k != KEY_LEFT_GUI &&
-                        k != KEY_LEFT_ALT &&
-                        k != KEY_LEFT_CTRL) {
-                        hid->release(k);
-                    }
-                }
-
-                if (key.alt) hid->release(KEY_LEFT_ALT);
-                if (key.ctrl) hid->release(KEY_LEFT_CTRL);
+                hid->releaseAll();
+                snoflakeGuiDownSent = false;
             } else {
                 if (key.alt) hid->press(KEY_LEFT_ALT);
                 if (key.ctrl) hid->press(KEY_LEFT_CTRL);
