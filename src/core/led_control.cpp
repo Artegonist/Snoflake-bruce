@@ -736,7 +736,12 @@ void ledSetup() {
 void ledEffects(bool enable) {
     if (enable) {
         if (ledEffectTaskHandle == NULL) {
-            xTaskCreate(ledEffectTask, "LedEffect", 2048, NULL, 1, &ledEffectTaskHandle);
+            const BaseType_t ledTaskResult =
+                xTaskCreate(ledEffectTask, "LedEffect", 8192, NULL, 1, &ledEffectTaskHandle);
+            if (ledTaskResult != pdPASS) {
+                ledEffectTaskHandle = NULL;
+                Serial.printf("[LED] xTaskCreate failed: %ld\n", static_cast<long>(ledTaskResult));
+            }
         }
     } else {
         if (ledEffectTaskHandle != NULL) {
