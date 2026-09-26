@@ -19,6 +19,50 @@ bool caps_lock = false;
 constexpr unsigned long TCA8418_REPEAT_START_MS = 350;
 constexpr unsigned long TCA8418_REPEAT_MS = 150;
 
+// SNOFLAKE_HID_SUPER_V1
+namespace {
+volatile bool snoflakeHidKeyboardActive = false;
+volatile bool snoflakeOptPressed = false;
+bool snoflakeG0LastRaw = false;
+bool snoflakeG0Stable = false;
+bool snoflakeG0IgnoreUntilRelease = false;
+unsigned long snoflakeG0ChangedAt = 0;
+}
+
+extern "C" void snoflakeHidKeyboardMode(bool enabled) {
+    snoflakeHidKeyboardActive = enabled;
+    snoflakeOptPressed = false;
+    snoflakeG0LastRaw = (digitalRead(0) == LOW);
+    snoflakeG0Stable = false;
+    snoflakeG0ChangedAt = millis();
+    snoflakeG0IgnoreUntilRelease = snoflakeG0LastRaw;
+    SelPress = false;
+}
+
+extern "C" bool snoflakeHidSuperDown() {
+    const bool raw = (digitalRead(0) == LOW);
+    const unsigned long now = millis();
+
+    if (snoflakeG0IgnoreUntilRelease) {
+        if (!raw) {
+            snoflakeG0IgnoreUntilRelease = false;
+            snoflakeG0LastRaw = false;
+            snoflakeG0Stable = false;
+            snoflakeG0ChangedAt = now;
+        }
+        return snoflakeOptPressed;
+    }
+
+    if (raw != snoflakeG0LastRaw) {
+        snoflakeG0LastRaw = raw;
+        snoflakeG0ChangedAt = now;
+    } else if ((unsigned long)(now - snoflakeG0ChangedAt) >= 15) {
+        snoflakeG0Stable = raw;
+    }
+
+    return snoflakeOptPressed || snoflakeG0Stable;
+}
+
 int handleSpecialKeys(uint8_t row, uint8_t col, bool pressed);
 void mapRawKeyToPhysical(uint8_t rawValue, uint8_t &row, uint8_t &col);
 
@@ -33,7 +77,7 @@ char getKeyChar(uint8_t row, uint8_t col) {
 }
 
 int handleSpecialKeys(uint8_t row, uint8_t col, bool pressed) {
-    char keyVal = _key_value_map[row][col].value_first;
+    uint8_t keyVal = static_cast<uint8_t>(_key_value_map[row][col].value_first);
     switch (keyVal) {
         case 0xFF:
             fn_key_pressed = pressed;
@@ -199,14 +243,25 @@ void InputHandler(void) {
     bool arrow_dw = false;
     bool arrow_ry = false;
     bool arrow_le = false;
-    if (!UseTCA8418 && millis() - tm < 200 && !LongPress) return;
+    const bool g0Pressed = (digitalRead(0) == LOW);
+    if (!g0Pressed && snoflakeG0IgnoreUntilRelease) {
+        snoflakeG0IgnoreUntilRelease = false;
+        snoflakeG0LastRaw = false;
+        snoflakeG0Stable = false;
+        snoflakeG0ChangedAt = millis();
+    }
+    if (!UseTCA8418 && millis() - tm < 200 && !LongPress && !snoflakeHidKeyboardActive) return;
 
-    if (digitalRead(0) == LOW) { // GPIO0 button, shoulder button
+    if (g0Pressed) { // GPIO0 button, shoulder button
         tm = millis();
-        if (!wakeUpScreen()) yield();
-        else return;
-        SelPress = true;
-        AnyKeyPress = true;
+        if (snoflakeHidKeyboardActive) {
+            AnyKeyPress = true;
+        } else if (!snoflakeG0IgnoreUntilRelease) {
+            if (!wakeUpScreen()) yield();
+            else return;
+            SelPress = true;
+            AnyKeyPress = true;
+        }
     }
 
     if (UseTCA8418) {
@@ -235,6 +290,10 @@ void InputHandler(void) {
                 uint8_t row, col;
                 mapRawKeyToPhysical(value, row, col);
                 if (row >= 4 || col >= 14) continue;
+
+                const uint8_t physicalKey =
+                    static_cast<uint8_t>(_key_value_map[row][col].value_first);
+                if (physicalKey == KEY_OPT) snoflakeOptPressed = pressed;
                 if (wakeUpScreen()) continue;
 
                 AnyKeyPress = true;
@@ -244,7 +303,7 @@ void InputHandler(void) {
 
                 if (!pressed) { KeyStroke.Clear(); }
 
-                char keyVal = getKeyChar(row, col);
+                uint8_t keyVal = static_cast<uint8_t>(getKeyChar(row, col));
 
                 if (keyVal == KEY_BACKSPACE && col == 13) {
                     del = pressed;
@@ -304,7 +363,7 @@ void InputHandler(void) {
 
                 if (!pressed) continue;
 
-                if (gui) {
+                if (gui && !snoflakeHidKeyboardActive) {
                     key.gui = true;
                     key.modifier_keys.emplace_back(KEY_OPT);
                     key.hid_keys.emplace_back(KEY_OPT);
@@ -337,7 +396,11 @@ void InputHandler(void) {
                     keyPulse = true;
                 }
 
-                if (keyVal != 0xFF && !sel && !gui && !alt && !ctrl && !del && keyVal != KEY_LEFT_SHIFT) {
+                const bool hidModifier =
+                    keyVal == KEY_OPT || keyVal == KEY_LEFT_ALT || keyVal == KEY_LEFT_CTRL ||
+                    keyVal == KEY_LEFT_SHIFT;
+                if (keyVal != 0xFF && !hidModifier && !sel && !del &&
+                    (snoflakeHidKeyboardActive || (!gui && !alt && !ctrl))) {
                     if (fn_key_pressed && arrow_up) key.word.emplace_back(0xDA);
                     else if (fn_key_pressed && arrow_dw) key.word.emplace_back(0xD9);
                     else if (fn_key_pressed && arrow_ry) key.word.emplace_back(0xD7);
@@ -407,6 +470,9 @@ void InputHandler(void) {
         tm = now;
     } else {
         Keyboard.update();
+        if (snoflakeHidKeyboardActive) {
+            snoflakeOptPressed = Keyboard.isPressed() && Keyboard.keysState().opt;
+        }
         if (Keyboard.isPressed()) {
             tm = millis();
             if (!wakeUpScreen()) AnyKeyPress = true;

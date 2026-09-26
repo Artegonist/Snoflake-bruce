@@ -994,10 +994,19 @@ void key_input_from_string(const String &text) {
 // DUCKY_KEYBOARD - Interactive keyboard mode (USB or BLE)
 // ============================================================================
 
+// SNOFLAKE_HID_SUPER_V1
+extern "C" void snoflakeHidKeyboardMode(bool) __attribute__((weak));
+extern "C" bool snoflakeHidSuperDown() __attribute__((weak));
+
 void ducky_keyboard(HIDInterface *&hid, bool ble) {
     String _mymsg = "";
     keyStroke key;
     long debounce = millis();
+    const bool snoflakeHidHooks =
+        snoflakeHidKeyboardMode != nullptr && snoflakeHidSuperDown != nullptr;
+    bool snoflakeHidModeStarted = false;
+    bool snoflakeGuiDownSent = false;
+    bool snoflakeBleWasConnected = !ble;
 
     // Double cleanup before starting
     if (ble) safeCleanupDuckyBLE(hid);
@@ -1018,6 +1027,13 @@ void ducky_keyboard(HIDInterface *&hid, bool ble) {
         hid->releaseAll();
     }
 
+#if defined(HAS_KEYBOARD)
+    if (snoflakeHidHooks) {
+        snoflakeHidKeyboardMode(true);
+        snoflakeHidModeStarted = true;
+    }
+#endif
+
     drawMainBorder();
     tft.setTextSize(FP);
     tft.setTextColor(bruceConfig.priColor);
@@ -1034,20 +1050,92 @@ void ducky_keyboard(HIDInterface *&hid, bool ble) {
 
     while (1) {
 #if defined(HAS_KEYBOARD)
-        key = _getKeyPress();
-        if (key.pressed && (millis() - debounce > 200)) {
-            if (key.alt) hid->press(KEY_LEFT_ALT);
-            if (key.ctrl) hid->press(KEY_LEFT_CTRL);
-            if (key.gui) hid->press(KEY_LEFT_GUI);
-            if (key.enter) hid->println();
-            else if (key.del) hid->press(KEYBACKSPACE);
-            else {
-                for (char k : key.word) { hid->press(k); }
-                for (auto k : key.modifier_keys) { hid->press(k); }
-            }
-            if (key.fn && key.exit_key) break;
+        if (snoflakeHidModeStarted && ble && (!hid || !hid->isConnected())) {
+            if (snoflakeBleWasConnected && hid) hid->releaseAll();
+            snoflakeBleWasConnected = false;
+            key = _getKeyPress();
+            vTaskDelay(pdMS_TO_TICKS(10));
+            continue;
+        }
 
-            hid->releaseAll();
+        if (snoflakeHidModeStarted && ble && !snoflakeBleWasConnected) {
+            snoflakeBleWasConnected = true;
+            snoflakeGuiDownSent = false;
+        }
+
+        key = _getKeyPress();
+
+        if (snoflakeHidModeStarted) {
+            const bool superDown = snoflakeHidSuperDown();
+
+            if (superDown && !snoflakeGuiDownSent) {
+                hid->press(KEY_LEFT_GUI);
+                snoflakeGuiDownSent = true;
+            } else if (!superDown && snoflakeGuiDownSent) {
+                hid->release(KEY_LEFT_GUI);
+                snoflakeGuiDownSent = false;
+            }
+        }
+
+        const bool hasKeyPayload =
+            key.enter || key.del || key.alt || key.ctrl ||
+            !key.word.empty() || !key.modifier_keys.empty();
+
+        const bool acceptKey =
+            key.pressed &&
+            (snoflakeHidModeStarted
+                ? hasKeyPayload
+                : (millis() - debounce > 200));
+
+        if (acceptKey) {
+            if (snoflakeHidModeStarted && key.fn && key.exit_key) break;
+
+            if (snoflakeHidModeStarted) {
+                if (key.alt) hid->press(KEY_LEFT_ALT);
+                if (key.ctrl) hid->press(KEY_LEFT_CTRL);
+
+                for (auto k : key.modifier_keys) {
+                    if (k != KEY_LEFT_GUI &&
+                        k != KEY_LEFT_ALT &&
+                        k != KEY_LEFT_CTRL) {
+                        hid->press(k);
+                    }
+                }
+
+                if (key.enter) hid->press(KEY_RETURN);
+                else if (key.del) hid->press(KEYBACKSPACE);
+                else for (char k : key.word) hid->press(k);
+
+                for (char k : key.word) hid->release(k);
+
+                if (key.enter) hid->release(KEY_RETURN);
+                if (key.del) hid->release(KEYBACKSPACE);
+
+                for (auto k : key.modifier_keys) {
+                    if (k != KEY_LEFT_GUI &&
+                        k != KEY_LEFT_ALT &&
+                        k != KEY_LEFT_CTRL) {
+                        hid->release(k);
+                    }
+                }
+
+                if (key.alt) hid->release(KEY_LEFT_ALT);
+                if (key.ctrl) hid->release(KEY_LEFT_CTRL);
+            } else {
+                if (key.alt) hid->press(KEY_LEFT_ALT);
+                if (key.ctrl) hid->press(KEY_LEFT_CTRL);
+                if (key.gui) hid->press(KEY_LEFT_GUI);
+
+                if (key.enter) hid->println();
+                else if (key.del) hid->press(KEYBACKSPACE);
+                else {
+                    for (char k : key.word) hid->press(k);
+                    for (auto k : key.modifier_keys) hid->press(k);
+                }
+
+                if (key.fn && key.exit_key) break;
+                hid->releaseAll();
+            }
 
             String keyStr = "";
             for (auto i : key.word) {
@@ -1167,6 +1255,12 @@ void ducky_keyboard(HIDInterface *&hid, bool ble) {
 #endif
     }
 EXIT:
+#if defined(HAS_KEYBOARD)
+    if (snoflakeHidModeStarted) {
+        if (hid) hid->releaseAll();
+        snoflakeHidKeyboardMode(false);
+    }
+#endif
     if (ble) safeCleanupDuckyBLE(hid);
 
     if (!ble) {
