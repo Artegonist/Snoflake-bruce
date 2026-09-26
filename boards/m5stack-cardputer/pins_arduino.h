@@ -194,6 +194,11 @@ static const uint8_t _kb_asciimap[128] = {
     0             // DEL
 };
 
+// SHIFT is only needed above to build _kb_asciimap; undef it here so it
+// doesn't leak into other code compiled in the same translation unit
+// (e.g. FastLED, which uses SHIFT as an internal variable/constant name).
+#undef SHIFT
+
 #define HAS_RGB_LED 1
 #define LED_TYPE SK6812
 #define LED_ORDER GRB
