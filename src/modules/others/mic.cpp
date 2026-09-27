@@ -220,12 +220,15 @@ void mic_test_one_task() {
     const int displayX = MARGIN_X;
     const int displayY = MARGIN_Y;
 
-    // Alloc framebuffer
+    // Render the spectrum in strips to fit the Cardputer's internal RAM.
+    constexpr int ROWS_PER_BUFFER = 8;
+    const int bufferRows = (displayHeight < ROWS_PER_BUFFER) ? displayHeight : ROWS_PER_BUFFER;
+    const size_t frameBufferSize = (size_t)displayWidth * bufferRows * sizeof(uint16_t);
     uint16_t *frameBuffer;
-    if (psramFound()) frameBuffer = (uint16_t *)ps_malloc(displayWidth * displayHeight * sizeof(uint16_t));
+    if (psramFound()) frameBuffer = (uint16_t *)ps_malloc(frameBufferSize);
     else {
         closeSdCard();
-        frameBuffer = (uint16_t *)malloc(displayWidth * displayHeight * sizeof(uint16_t));
+        frameBuffer = (uint16_t *)malloc(frameBufferSize);
     }
 
     if (!frameBuffer) {
@@ -262,26 +265,30 @@ void mic_test_one_task() {
         fft_destroy(plan);
 
         // ===== RENDER WITH SCALING =====
-        for (int y = 0; y < displayHeight; y++) {
-            // Original spectrum y-display y-map
-            int srcY = (y * SPECTRUM_HEIGHT) / displayHeight;
+        for (int yStart = 0; yStart < displayHeight; yStart += ROWS_PER_BUFFER) {
+            int rowsThisBuffer = displayHeight - yStart;
+            if (rowsThisBuffer > ROWS_PER_BUFFER) rowsThisBuffer = ROWS_PER_BUFFER;
 
-            for (int x = 0; x < displayWidth; x++) {
-                // Original spectrum display x-map
-                int srcX = (x * SPECTRUM_WIDTH) / displayWidth;
-                int index = (srcX + posData) % HISTORY_LEN;
+            for (int row = 0; row < rowsThisBuffer; row++) {
+                int y = yStart + row;
+                int srcY = (y * SPECTRUM_HEIGHT) / displayHeight;
 
-                uint8_t val = fftHistory[index * SPECTRUM_HEIGHT + srcY];
-                uint16_t color = rgb565(
-                    pgm_read_byte(&ImageData[val * 3 + 0]),
-                    pgm_read_byte(&ImageData[val * 3 + 1]),
-                    pgm_read_byte(&ImageData[val * 3 + 2])
-                );
-                frameBuffer[y * displayWidth + x] = color;
+                for (int x = 0; x < displayWidth; x++) {
+                    int srcX = (x * SPECTRUM_WIDTH) / displayWidth;
+                    int index = (srcX + posData) % HISTORY_LEN;
+
+                    uint8_t val = fftHistory[index * SPECTRUM_HEIGHT + srcY];
+                    uint16_t color = rgb565(
+                        pgm_read_byte(&ImageData[val * 3 + 0]),
+                        pgm_read_byte(&ImageData[val * 3 + 1]),
+                        pgm_read_byte(&ImageData[val * 3 + 2])
+                    );
+                    frameBuffer[row * displayWidth + x] = color;
+                }
             }
+            tft.pushImage(displayX, displayY + yStart, displayWidth, rowsThisBuffer, frameBuffer);
         }
 
-        tft.pushImage(displayX, displayY, displayWidth, displayHeight, frameBuffer);
         wakeUpScreen();
         if (check(SelPress) || check(EscPress)) break;
         vTaskDelay(pdMS_TO_TICKS(1));
